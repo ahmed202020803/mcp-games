@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "mcp-games": {
+      "command": "python",
+      "args": [
+        "-m",
+        "src.mcp_server",
+        "--port",
+        "8765"
+      ],
+      "env": {
+        "MCP_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
