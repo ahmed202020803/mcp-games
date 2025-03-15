@@ -1,474 +1,638 @@
 """
-Advanced Game Engine with Integrated Systems
+Advanced Game Engine for MCP Games
 """
 
+import os
+import sys
 import time
 import logging
 import pygame
-from typing import Dict, List, Any, Optional, Tuple, Set, Callable
+import random
+from typing import Dict, List, Any, Optional, Tuple, Callable, Set, Union
+from enum import Enum, auto
 
-from .game_engine import GameObject, Player, NPC
-from .physics import PhysicsSystem, SphereCollider, BoxCollider, Vector3
-from .renderer import RenderSystem, RenderComponent, Camera, ParticleSystem
+from .physics import PhysicsSystem, Vector3, BoxCollider, SphereCollider
+from .renderer import RenderSystem, Sprite, ParticleSystem, Camera
+from .weather import WeatherSystem, WeatherType
 
+# Input System
 class InputSystem:
-    """System for handling user input"""
+    """Handles user input and key bindings"""
     
     def __init__(self):
-        self.key_states = {}  # Current state of keys
-        self.prev_key_states = {}  # Previous state of keys
-        self.mouse_pos = (0, 0)
-        self.mouse_buttons = [False, False, False]  # Left, Middle, Right
-        self.prev_mouse_buttons = [False, False, False]
-        self.key_bindings: Dict[int, str] = {}  # Maps key codes to action names
-        self.action_handlers: Dict[str, Callable] = {}  # Maps action names to handler functions
+        self.key_bindings: Dict[int, str] = {}  # Maps pygame key constants to action names
+        self.action_handlers: Dict[str, List[Callable[[], None]]] = {}  # Maps action names to handler functions
+        self.keys_pressed: Set[int] = set()  # Currently pressed keys
+        self.keys_just_pressed: Set[int] = set()  # Keys pressed this frame
+        self.keys_just_released: Set[int] = set()  # Keys released this frame
+        self.mouse_position: Tuple[int, int] = (0, 0)  # Current mouse position
+        self.mouse_buttons: Dict[int, bool] = {1: False, 2: False, 3: False}  # Mouse button states
+        self.mouse_buttons_just_pressed: Set[int] = set()  # Mouse buttons pressed this frame
+        self.mouse_buttons_just_released: Set[int] = set()  # Mouse buttons released this frame
+        self.logger = logging.getLogger("mcp_games.engine.input")
     
-    def bind_key(self, key_code: int, action_name: str):
+    def bind_key(self, key: int, action: str):
         """Bind a key to an action"""
-        self.key_bindings[key_code] = action_name
+        self.key_bindings[key] = action
+        self.logger.debug(f"Bound key {pygame.key.name(key)} to action '{action}'")
     
-    def register_action_handler(self, action_name: str, handler: Callable):
+    def register_action_handler(self, action: str, handler: Callable[[], None]):
         """Register a handler function for an action"""
-        self.action_handlers[action_name] = handler
+        if action not in self.action_handlers:
+            self.action_handlers[action] = []
+        self.action_handlers[action].append(handler)
+        self.logger.debug(f"Registered handler for action '{action}'")
     
-    def update(self):
-        """Update input state"""
-        # Store previous states
-        self.prev_key_states = self.key_states.copy()
-        self.prev_mouse_buttons = self.mouse_buttons.copy()
+    def process_events(self, events: List[pygame.event.Event]):
+        """Process pygame events"""
+        # Clear just pressed/released sets
+        self.keys_just_pressed.clear()
+        self.keys_just_released.clear()
+        self.mouse_buttons_just_pressed.clear()
+        self.mouse_buttons_just_released.clear()
         
-        # Get current keyboard state
-        keys = pygame.key.get_pressed()
-        for key_code in self.key_bindings:
-            self.key_states[key_code] = keys[key_code]
-        
-        # Get current mouse state
-        self.mouse_pos = pygame.mouse.get_pos()
-        mouse_buttons = pygame.mouse.get_pressed(3)  # Get all 3 mouse buttons
-        self.mouse_buttons = list(mouse_buttons)
-        
-        # Process actions
-        for key_code, action_name in self.key_bindings.items():
-            # Key just pressed
-            if self.key_states.get(key_code, False) and not self.prev_key_states.get(key_code, False):
-                if action_name in self.action_handlers:
-                    self.action_handlers[action_name](True)
+        # Process events
+        for event in events:
+            if event.type == pygame.KEYDOWN:
+                self.keys_pressed.add(event.key)
+                self.keys_just_pressed.add(event.key)
+                
+                # Trigger action if key is bound
+                if event.key in self.key_bindings:
+                    action = self.key_bindings[event.key]
+                    self._trigger_action(action)
             
-            # Key just released
-            elif not self.key_states.get(key_code, False) and self.prev_key_states.get(key_code, False):
-                if action_name in self.action_handlers:
-                    self.action_handlers[action_name](False)
+            elif event.type == pygame.KEYUP:
+                if event.key in self.keys_pressed:
+                    self.keys_pressed.remove(event.key)
+                self.keys_just_released.add(event.key)
+            
+            elif event.type == pygame.MOUSEMOTION:
+                self.mouse_position = event.pos
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                self.mouse_buttons[event.button] = True
+                self.mouse_buttons_just_pressed.add(event.button)
+            
+            elif event.type == pygame.MOUSEBUTTONUP:
+                self.mouse_buttons[event.button] = False
+                self.mouse_buttons_just_released.add(event.button)
     
-    def is_key_pressed(self, key_code: int) -> bool:
+    def _trigger_action(self, action: str):
+        """Trigger all handlers for an action"""
+        if action in self.action_handlers:
+            for handler in self.action_handlers[action]:
+                handler()
+    
+    def is_key_pressed(self, key: int) -> bool:
         """Check if a key is currently pressed"""
-        return self.key_states.get(key_code, False)
+        return key in self.keys_pressed
     
-    def is_key_just_pressed(self, key_code: int) -> bool:
+    def is_key_just_pressed(self, key: int) -> bool:
         """Check if a key was just pressed this frame"""
-        return self.key_states.get(key_code, False) and not self.prev_key_states.get(key_code, False)
+        return key in self.keys_just_pressed
     
-    def is_key_just_released(self, key_code: int) -> bool:
+    def is_key_just_released(self, key: int) -> bool:
         """Check if a key was just released this frame"""
-        return not self.key_states.get(key_code, False) and self.prev_key_states.get(key_code, False)
+        return key in self.keys_just_released
+    
+    def is_action_pressed(self, action: str) -> bool:
+        """Check if any key bound to an action is pressed"""
+        for key, bound_action in self.key_bindings.items():
+            if bound_action == action and key in self.keys_pressed:
+                return True
+        return False
     
     def is_mouse_button_pressed(self, button: int) -> bool:
         """Check if a mouse button is currently pressed"""
-        if 0 <= button < len(self.mouse_buttons):
-            return self.mouse_buttons[button]
-        return False
+        return self.mouse_buttons.get(button, False)
     
     def is_mouse_button_just_pressed(self, button: int) -> bool:
         """Check if a mouse button was just pressed this frame"""
-        if 0 <= button < len(self.mouse_buttons):
-            return self.mouse_buttons[button] and not self.prev_mouse_buttons[button]
-        return False
+        return button in self.mouse_buttons_just_pressed
     
     def is_mouse_button_just_released(self, button: int) -> bool:
         """Check if a mouse button was just released this frame"""
-        if 0 <= button < len(self.mouse_buttons):
-            return not self.mouse_buttons[button] and self.prev_mouse_buttons[button]
-        return False
+        return button in self.mouse_buttons_just_released
     
     def get_mouse_position(self) -> Tuple[int, int]:
         """Get the current mouse position"""
-        return self.mouse_pos
+        return self.mouse_position
 
 
+# Sound System
 class SoundSystem:
-    """System for audio playback"""
+    """Handles audio playback and sound effects"""
     
     def __init__(self):
+        self.sounds: Dict[str, pygame.mixer.Sound] = {}
+        self.music_tracks: Dict[str, str] = {}  # Maps track names to file paths
+        self.current_music_track: Optional[str] = None
+        self.sound_volume = 1.0  # 0.0 to 1.0
+        self.music_volume = 1.0  # 0.0 to 1.0
+        self.logger = logging.getLogger("mcp_games.engine.sound")
+        
         # Initialize pygame mixer
         pygame.mixer.init()
-        
-        self.sounds: Dict[str, pygame.mixer.Sound] = {}
-        self.music_track: Optional[str] = None
-        self.volume = 1.0
-        self.music_volume = 1.0
-        self.enabled = True
-        self.logger = logging.getLogger("mcp_games.engine.sound")
     
-    def load_sound(self, name: str, file_path: str) -> bool:
+    def load_sound(self, name: str, file_path: str):
         """Load a sound effect"""
         try:
-            self.sounds[name] = pygame.mixer.Sound(file_path)
-            return True
-        except pygame.error as e:
-            self.logger.error(f"Failed to load sound '{name}' from {file_path}: {str(e)}")
-            return False
+            sound = pygame.mixer.Sound(file_path)
+            self.sounds[name] = sound
+            self.logger.debug(f"Loaded sound '{name}' from {file_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to load sound '{name}' from {file_path}: {e}")
     
-    def play_sound(self, name: str, volume: float = 1.0, loops: int = 0) -> bool:
+    def load_music(self, name: str, file_path: str):
+        """Register a music track"""
+        self.music_tracks[name] = file_path
+        self.logger.debug(f"Registered music track '{name}' from {file_path}")
+    
+    def play_sound(self, name: str, volume: float = None, loops: int = 0):
         """Play a sound effect"""
-        if not self.enabled:
-            return False
-            
         if name in self.sounds:
-            # Set volume for this sound (adjusted by master volume)
-            self.sounds[name].set_volume(volume * self.volume)
-            
-            # Play the sound
-            self.sounds[name].play(loops)
-            return True
+            sound = self.sounds[name]
+            if volume is not None:
+                sound.set_volume(volume * self.sound_volume)
+            else:
+                sound.set_volume(self.sound_volume)
+            sound.play(loops=loops)
+            self.logger.debug(f"Playing sound '{name}'")
         else:
             self.logger.warning(f"Sound '{name}' not found")
-            return False
     
-    def stop_sound(self, name: str) -> bool:
-        """Stop a sound effect"""
-        if name in self.sounds:
-            self.sounds[name].stop()
-            return True
+    def play_music(self, name: str, loops: int = -1, fade_ms: int = 500):
+        """Play a music track"""
+        if name in self.music_tracks:
+            file_path = self.music_tracks[name]
+            try:
+                pygame.mixer.music.load(file_path)
+                pygame.mixer.music.set_volume(self.music_volume)
+                pygame.mixer.music.play(loops=loops, fade_ms=fade_ms)
+                self.current_music_track = name
+                self.logger.debug(f"Playing music track '{name}'")
+            except Exception as e:
+                self.logger.error(f"Failed to play music track '{name}': {e}")
         else:
-            self.logger.warning(f"Sound '{name}' not found")
-            return False
+            self.logger.warning(f"Music track '{name}' not found")
     
-    def play_music(self, file_path: str, loops: int = -1, fade_ms: int = 0) -> bool:
-        """Play background music"""
-        if not self.enabled:
-            return False
-            
-        try:
-            # Stop current music if playing
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-            
-            # Load and play new music
-            pygame.mixer.music.load(file_path)
-            pygame.mixer.music.set_volume(self.music_volume)
-            
-            if fade_ms > 0:
-                pygame.mixer.music.play(loops, fade_ms=fade_ms)
-            else:
-                pygame.mixer.music.play(loops)
-                
-            self.music_track = file_path
-            return True
-        except pygame.error as e:
-            self.logger.error(f"Failed to play music from {file_path}: {str(e)}")
-            return False
+    def stop_music(self, fade_ms: int = 500):
+        """Stop the current music track"""
+        pygame.mixer.music.fadeout(fade_ms)
+        self.current_music_track = None
+        self.logger.debug("Stopped music")
     
-    def stop_music(self, fade_ms: int = 0) -> bool:
-        """Stop background music"""
-        try:
-            if fade_ms > 0:
-                pygame.mixer.music.fadeout(fade_ms)
-            else:
-                pygame.mixer.music.stop()
-            
-            self.music_track = None
-            return True
-        except pygame.error as e:
-            self.logger.error(f"Failed to stop music: {str(e)}")
-            return False
+    def pause_music(self):
+        """Pause the current music track"""
+        pygame.mixer.music.pause()
+        self.logger.debug("Paused music")
     
-    def set_volume(self, volume: float):
-        """Set master volume for sound effects"""
-        self.volume = max(0.0, min(1.0, volume))
-        
-        # Update volume for all loaded sounds
-        for sound in self.sounds.values():
-            sound.set_volume(self.volume)
+    def unpause_music(self):
+        """Unpause the current music track"""
+        pygame.mixer.music.unpause()
+        self.logger.debug("Unpaused music")
+    
+    def set_sound_volume(self, volume: float):
+        """Set the volume for sound effects"""
+        self.sound_volume = max(0.0, min(1.0, volume))
+        self.logger.debug(f"Set sound volume to {self.sound_volume}")
     
     def set_music_volume(self, volume: float):
-        """Set volume for background music"""
+        """Set the volume for music"""
         self.music_volume = max(0.0, min(1.0, volume))
         pygame.mixer.music.set_volume(self.music_volume)
+        self.logger.debug(f"Set music volume to {self.music_volume}")
+
+
+# Scene Management
+class Scene:
+    """Represents a game scene or level"""
     
-    def toggle_enabled(self):
-        """Toggle sound on/off"""
-        self.enabled = not self.enabled
+    def __init__(self, name: str):
+        self.name = name
+        self.game_objects: List[Any] = []
+        self.active = False
+        self.logger = logging.getLogger(f"mcp_games.engine.scene.{name}")
+    
+    def add_game_object(self, game_object: Any):
+        """Add a game object to the scene"""
+        self.game_objects.append(game_object)
+        game_object.scene = self
+        self.logger.debug(f"Added game object {game_object.name} to scene {self.name}")
+    
+    def remove_game_object(self, game_object: Any):
+        """Remove a game object from the scene"""
+        if game_object in self.game_objects:
+            self.game_objects.remove(game_object)
+            game_object.scene = None
+            self.logger.debug(f"Removed game object {game_object.name} from scene {self.name}")
+    
+    def get_game_objects_by_tag(self, tag: str) -> List[Any]:
+        """Get all game objects with a specific tag"""
+        return [obj for obj in self.game_objects if hasattr(obj, 'tag') and obj.tag == tag]
+    
+    def get_game_object_by_name(self, name: str) -> Optional[Any]:
+        """Get a game object by name"""
+        for obj in self.game_objects:
+            if hasattr(obj, 'name') and obj.name == name:
+                return obj
+        return None
+    
+    def update(self, delta_time: float):
+        """Update all game objects in the scene"""
+        for game_object in self.game_objects:
+            if hasattr(game_object, 'update'):
+                game_object.update(delta_time)
+    
+    def render(self, render_system: Any):
+        """Render all game objects in the scene"""
+        for game_object in self.game_objects:
+            if hasattr(game_object, 'render'):
+                game_object.render(render_system)
+    
+    def on_activate(self):
+        """Called when the scene becomes active"""
+        self.active = True
+        self.logger.info(f"Scene {self.name} activated")
         
-        if not self.enabled:
-            # Stop all sounds and music
-            pygame.mixer.stop()
-            pygame.mixer.music.stop()
-        elif self.music_track:
-            # Restart music if we have a track
-            self.play_music(self.music_track)
-
-
-class AdvancedGameEngine:
-    """Advanced game engine with integrated systems"""
+        # Activate all game objects
+        for game_object in self.game_objects:
+            if hasattr(game_object, 'on_activate'):
+                game_object.on_activate()
     
-    def __init__(self, screen_width: int = 800, screen_height: int = 600, title: str = "MCP Advanced Game"):
+    def on_deactivate(self):
+        """Called when the scene becomes inactive"""
+        self.active = False
+        self.logger.info(f"Scene {self.name} deactivated")
+        
+        # Deactivate all game objects
+        for game_object in self.game_objects:
+            if hasattr(game_object, 'on_deactivate'):
+                game_object.on_deactivate()
+
+
+# Event System
+class EventSystem:
+    """Handles game events and callbacks"""
+    
+    def __init__(self):
+        self.event_handlers: Dict[str, List[Callable[..., None]]] = {}
+        self.scheduled_events: List[Tuple[float, str, List[Any], Dict[str, Any]]] = []
+        self.logger = logging.getLogger("mcp_games.engine.events")
+    
+    def register_event_handler(self, event_name: str, handler: Callable[..., None]):
+        """Register a handler for an event"""
+        if event_name not in self.event_handlers:
+            self.event_handlers[event_name] = []
+        self.event_handlers[event_name].append(handler)
+        self.logger.debug(f"Registered handler for event '{event_name}'")
+    
+    def unregister_event_handler(self, event_name: str, handler: Callable[..., None]):
+        """Unregister a handler for an event"""
+        if event_name in self.event_handlers and handler in self.event_handlers[event_name]:
+            self.event_handlers[event_name].remove(handler)
+            self.logger.debug(f"Unregistered handler for event '{event_name}'")
+    
+    def trigger_event(self, event_name: str, *args, **kwargs):
+        """Trigger an event with arguments"""
+        if event_name in self.event_handlers:
+            for handler in self.event_handlers[event_name]:
+                try:
+                    handler(*args, **kwargs)
+                except Exception as e:
+                    self.logger.error(f"Error in event handler for '{event_name}': {e}")
+            self.logger.debug(f"Triggered event '{event_name}'")
+    
+    def schedule_event(self, delay: float, event_name: str, *args, **kwargs):
+        """Schedule an event to be triggered after a delay (in seconds)"""
+        self.scheduled_events.append((time.time() + delay, event_name, args, kwargs))
+        self.logger.debug(f"Scheduled event '{event_name}' with {delay}s delay")
+    
+    def update(self):
+        """Update scheduled events"""
+        current_time = time.time()
+        triggered_events = []
+        
+        # Find events to trigger
+        for event in self.scheduled_events:
+            trigger_time, event_name, args, kwargs = event
+            if current_time >= trigger_time:
+                self.trigger_event(event_name, *args, **kwargs)
+                triggered_events.append(event)
+        
+        # Remove triggered events
+        for event in triggered_events:
+            self.scheduled_events.remove(event)
+
+
+# Game Object
+class GameObject:
+    """Base class for all game objects"""
+    
+    def __init__(self, name: str, position: Tuple[float, float, float] = (0, 0, 0)):
+        self.name = name
+        self.position = position
+        self.rotation = (0, 0, 0)  # Euler angles (x, y, z) in degrees
+        self.scale = (1, 1, 1)
+        self.tag = ""
+        self.active = True
+        self.scene = None
+        self.properties: Dict[str, Any] = {}
+        self.components: Dict[str, Any] = {}
+        self.logger = logging.getLogger(f"mcp_games.engine.gameobject.{name}")
+    
+    def update(self, delta_time: float):
+        """Update the game object"""
+        # Update components
+        for component_name, component in self.components.items():
+            if hasattr(component, 'update'):
+                component.update(delta_time)
+    
+    def render(self, render_system: Any):
+        """Render the game object"""
+        # Render components
+        for component_name, component in self.components.items():
+            if hasattr(component, 'render'):
+                component.render(render_system)
+    
+    def add_component(self, name: str, component: Any):
+        """Add a component to the game object"""
+        self.components[name] = component
+        if hasattr(component, 'game_object'):
+            component.game_object = self
+        self.logger.debug(f"Added component '{name}' to {self.name}")
+    
+    def get_component(self, name: str) -> Optional[Any]:
+        """Get a component by name"""
+        return self.components.get(name)
+    
+    def remove_component(self, name: str):
+        """Remove a component by name"""
+        if name in self.components:
+            component = self.components[name]
+            if hasattr(component, 'game_object'):
+                component.game_object = None
+            del self.components[name]
+            self.logger.debug(f"Removed component '{name}' from {self.name}")
+    
+    def set_property(self, name: str, value: Any):
+        """Set a property value"""
+        self.properties[name] = value
+    
+    def get_property(self, name: str, default: Any = None) -> Any:
+        """Get a property value"""
+        return self.properties.get(name, default)
+    
+    def on_activate(self):
+        """Called when the game object becomes active"""
+        self.active = True
+        
+        # Activate components
+        for component_name, component in self.components.items():
+            if hasattr(component, 'on_activate'):
+                component.on_activate()
+    
+    def on_deactivate(self):
+        """Called when the game object becomes inactive"""
+        self.active = False
+        
+        # Deactivate components
+        for component_name, component in self.components.items():
+            if hasattr(component, 'on_deactivate'):
+                component.on_deactivate()
+    
+    def on_collision(self, other: 'GameObject', contact_point: Vector3):
+        """Called when this object collides with another"""
+        # Notify components
+        for component_name, component in self.components.items():
+            if hasattr(component, 'on_collision'):
+                component.on_collision(other, contact_point)
+
+
+# Advanced Game Engine
+class AdvancedGameEngine:
+    """Advanced game engine with physics, rendering, and AI integration"""
+    
+    def __init__(self, title: str = "MCP Game", width: int = 800, height: int = 600):
+        # Initialize logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger("mcp_games.engine")
+        
         # Initialize pygame
         pygame.init()
         
-        # Core engine components
-        self.objects: Dict[str, GameObject] = {}
-        self.running = False
-        self.paused = False
-        self.last_update_time = 0
-        self.delta_time = 0
-        self.frame_count = 0
-        self.fps = 60
-        self.target_fps = 60
-        self.logger = logging.getLogger("mcp_games.engine.advanced")
+        # Create window
+        self.width = width
+        self.height = height
+        self.screen = pygame.display.set_mode((width, height))
+        pygame.display.set_caption(title)
         
-        # Integrated systems
+        # Create systems
         self.physics_system = PhysicsSystem()
-        self.render_system = RenderSystem(screen_width, screen_height, title)
+        self.render_system = RenderSystem(self.screen)
         self.input_system = InputSystem()
         self.sound_system = SoundSystem()
+        self.event_system = EventSystem()
+        self.weather_system = WeatherSystem(self)
         
         # Scene management
-        self.current_scene: Optional[str] = None
-        self.scenes: Dict[str, Dict[str, GameObject]] = {}
+        self.scenes: Dict[str, Scene] = {}
+        self.active_scene: Optional[Scene] = None
         
-        # Event system
-        self.event_handlers: Dict[str, List[Callable]] = {}
-        
-        # Setup default input bindings
-        self._setup_default_input_bindings()
-        
-        # Clock for frame timing
+        # Game state
+        self.running = False
+        self.paused = False
+        self.target_fps = 60
         self.clock = pygame.time.Clock()
-    
-    def _setup_default_input_bindings(self):
-        """Setup default input bindings"""
-        # Bind escape key to quit
+        self.delta_time = 0
+        self.frame_count = 0
+        self.game_time = 0
+        
+        # Register default event handlers
+        self.input_system.register_action_handler("quit", self.quit)
+        self.input_system.register_action_handler("toggle_pause", self.toggle_pause)
+        
+        # Bind default keys
         self.input_system.bind_key(pygame.K_ESCAPE, "quit")
-        self.input_system.register_action_handler("quit", lambda pressed: self.stop() if pressed else None)
-        
-        # Bind P key to toggle pause
         self.input_system.bind_key(pygame.K_p, "toggle_pause")
-        self.input_system.register_action_handler("toggle_pause", 
-                                                 lambda pressed: self.toggle_pause() if pressed else None)
         
-        # Bind F1 key to toggle debug mode
-        self.input_system.bind_key(pygame.K_F1, "toggle_debug")
-        self.input_system.register_action_handler("toggle_debug", 
-                                                 lambda pressed: self.render_system.toggle_debug_mode() if pressed else None)
+        self.logger.info(f"Advanced Game Engine initialized ({width}x{height})")
     
-    def create_player(self) -> Player:
-        """Create a new player object"""
-        player_id = f"player_{len([o for o in self.objects.values() if isinstance(o, Player)]) + 1}"
-        player = Player(player_id)
-        self.objects[player_id] = player
-        return player
+    def create_scene(self, name: str) -> Scene:
+        """Create a new scene"""
+        scene = Scene(name)
+        self.scenes[name] = scene
+        self.logger.info(f"Created scene '{name}'")
+        return scene
     
-    def create_npc(self, npc_type: str) -> NPC:
-        """Create a new NPC object"""
-        npc_id = f"npc_{npc_type}_{len([o for o in self.objects.values() if isinstance(o, NPC)]) + 1}"
-        npc = NPC(npc_id, npc_type)
-        self.objects[npc_id] = npc
-        return npc
-    
-    def get_object(self, object_id: str) -> Optional[GameObject]:
-        """Get a game object by ID"""
-        return self.objects.get(object_id)
-    
-    def add_object(self, game_object: GameObject):
-        """Add an existing game object to the engine"""
-        self.objects[game_object.id] = game_object
-    
-    def remove_object(self, object_id: str) -> bool:
-        """Remove a game object from the engine"""
-        if object_id in self.objects:
-            del self.objects[object_id]
-            return True
-        return False
-    
-    def add_collider(self, game_object: GameObject, collider_type: str = "sphere", **kwargs):
-        """Add a collider to a game object"""
-        if collider_type.lower() == "sphere":
-            radius = kwargs.get("radius", 1.0)
-            collider = SphereCollider(game_object, radius)
-        elif collider_type.lower() == "box":
-            size = kwargs.get("size", Vector3(1.0, 1.0, 1.0))
-            collider = BoxCollider(game_object, size)
+    def set_active_scene(self, name: str):
+        """Set the active scene"""
+        if name in self.scenes:
+            # Deactivate current scene
+            if self.active_scene:
+                self.active_scene.on_deactivate()
+            
+            # Activate new scene
+            self.active_scene = self.scenes[name]
+            self.active_scene.on_activate()
+            self.logger.info(f"Set active scene to '{name}'")
         else:
-            self.logger.warning(f"Unknown collider type: {collider_type}")
-            return None
+            self.logger.error(f"Scene '{name}' not found")
+    
+    def create_game_object(self, name: str, position: Tuple[float, float, float] = (0, 0, 0)) -> GameObject:
+        """Create a new game object"""
+        game_object = GameObject(name, position)
         
-        # Set collider properties
-        collider.is_trigger = kwargs.get("is_trigger", False)
-        collider.layer = kwargs.get("layer", 0)
+        # Add to active scene if available
+        if self.active_scene:
+            self.active_scene.add_game_object(game_object)
+        
+        return game_object
+    
+    def create_sprite(self, position: Vector3, image_path: str = None, color: Tuple[int, int, int] = None, 
+                     size: Tuple[int, int] = (32, 32)) -> Sprite:
+        """Create a sprite for rendering"""
+        sprite = self.render_system.create_sprite(position, image_path, color, size)
+        return sprite
+    
+    def create_particle_system(self, position: Vector3) -> ParticleSystem:
+        """Create a particle system"""
+        particle_system = self.render_system.create_particle_system(position)
+        return particle_system
+    
+    def add_box_collider(self, game_object: GameObject, size: Vector3) -> BoxCollider:
+        """Add a box collider to a game object"""
+        position = Vector3.from_tuple(game_object.position)
+        collider = BoxCollider(position, size)
+        collider.game_object = game_object
         
         # Add to physics system
         self.physics_system.add_collider(collider)
         
-        # Store reference on game object
-        game_object.set_property("collider", collider)
+        # Add as component
+        game_object.add_component("collider", collider)
         
         return collider
     
-    def add_render_component(self, game_object: GameObject, sprite_path: Optional[str] = None):
-        """Add a render component to a game object"""
-        render_component = RenderComponent(game_object, sprite_path)
-        self.render_system.add_render_component(render_component)
+    def add_sphere_collider(self, game_object: GameObject, radius: float) -> SphereCollider:
+        """Add a sphere collider to a game object"""
+        position = Vector3.from_tuple(game_object.position)
+        collider = SphereCollider(position, radius)
+        collider.game_object = game_object
         
-        # Store reference on game object
-        game_object.set_property("render_component", render_component)
+        # Add to physics system
+        self.physics_system.add_collider(collider)
         
-        return render_component
+        # Add as component
+        game_object.add_component("collider", collider)
+        
+        return collider
     
-    def create_particle_system(self, position: Vector3) -> ParticleSystem:
-        """Create a particle system"""
-        particle_system = ParticleSystem(position)
-        self.render_system.add_particle_system(particle_system)
-        return particle_system
-    
-    def register_event_handler(self, event_name: str, handler: Callable):
+    def register_event_handler(self, event_name: str, handler: Callable[..., None]):
         """Register a handler for an event"""
-        if event_name not in self.event_handlers:
-            self.event_handlers[event_name] = []
-        
-        self.event_handlers[event_name].append(handler)
+        self.event_system.register_event_handler(event_name, handler)
     
-    def trigger_event(self, event_name: str, **kwargs):
+    def trigger_event(self, event_name: str, *args, **kwargs):
         """Trigger an event"""
-        if event_name in self.event_handlers:
-            for handler in self.event_handlers[event_name]:
-                handler(**kwargs)
+        self.event_system.trigger_event(event_name, *args, **kwargs)
     
-    def create_scene(self, scene_name: str) -> bool:
-        """Create a new scene"""
-        if scene_name in self.scenes:
-            self.logger.warning(f"Scene '{scene_name}' already exists")
-            return False
-        
-        self.scenes[scene_name] = {}
-        return True
+    def schedule_event(self, delay: float, event_name: str, *args, **kwargs):
+        """Schedule an event to be triggered after a delay"""
+        self.event_system.schedule_event(delay, event_name, *args, **kwargs)
     
-    def load_scene(self, scene_name: str) -> bool:
-        """Load a scene"""
-        if scene_name not in self.scenes:
-            self.logger.warning(f"Scene '{scene_name}' not found")
-            return False
-        
-        # Clear current objects
-        self.objects = {}
-        
-        # Load objects from scene
-        self.objects = self.scenes[scene_name].copy()
-        
-        # Set current scene
-        self.current_scene = scene_name
-        
-        # Trigger scene loaded event
-        self.trigger_event("scene_loaded", scene_name=scene_name)
-        
-        return True
+    def set_weather(self, weather_type: WeatherType, transition_duration: float = 10.0):
+        """Set the current weather with optional transition time"""
+        self.weather_system.set_weather(weather_type, transition_duration)
+        self.logger.info(f"Setting weather to {weather_type.name} with {transition_duration}s transition")
     
-    def save_scene(self, scene_name: Optional[str] = None) -> bool:
-        """Save current objects to a scene"""
-        if scene_name is None:
-            scene_name = self.current_scene
-        
-        if scene_name is None:
-            self.logger.warning("No scene name specified and no current scene")
-            return False
-        
-        # Save current objects to scene
-        self.scenes[scene_name] = self.objects.copy()
-        
-        # Trigger scene saved event
-        self.trigger_event("scene_saved", scene_name=scene_name)
-        
-        return True
+    def toggle_auto_weather(self, enabled: bool = True):
+        """Enable or disable automatic weather changes"""
+        self.weather_system.auto_change = enabled
+        self.logger.info(f"Auto weather changes {'enabled' if enabled else 'disabled'}")
     
-    def update(self, delta_time: float):
-        """Update all game systems and objects"""
-        if self.paused:
+    def start(self):
+        """Start the game loop"""
+        if not self.active_scene:
+            self.logger.error("No active scene set")
             return
         
-        # Process pygame events
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                self.stop()
+        self.running = True
+        self.logger.info("Game loop started")
         
-        # Update input system
-        self.input_system.update()
+        # Main game loop
+        while self.running:
+            # Calculate delta time
+            self.delta_time = self.clock.tick(self.target_fps) / 1000.0
+            self.game_time += self.delta_time
+            self.frame_count += 1
+            
+            # Process events
+            events = pygame.event.get()
+            for event in events:
+                if event.type == pygame.QUIT:
+                    self.running = False
+            
+            # Process input
+            self.input_system.process_events(events)
+            
+            # Update game state if not paused
+            if not self.paused:
+                # Update event system
+                self.event_system.update()
+                
+                # Update weather system
+                self.weather_system.update(self.delta_time)
+                
+                # Update physics
+                self.physics_system.update(self.delta_time)
+                
+                # Update active scene
+                self.active_scene.update(self.delta_time)
+                
+                # Apply weather effects to game objects
+                for game_object in self.active_scene.game_objects:
+                    self.weather_system.apply_weather_effects(game_object, self.delta_time)
+            
+            # Clear screen
+            self.screen.fill((0, 0, 0))
+            
+            # Render scene
+            self.active_scene.render(self.render_system)
+            
+            # Update display
+            pygame.display.flip()
         
-        # Update physics
-        self.physics_system.update(delta_time)
-        
-        # Update game objects
-        for obj in self.objects.values():
-            obj.update(delta_time)
-        
-        # Trigger update event
-        self.trigger_event("update", delta_time=delta_time)
+        # Clean up
+        pygame.quit()
+        self.logger.info("Game loop ended")
     
-    def render(self):
-        """Render the current frame"""
-        # Use the render system to render everything
-        self.render_system.render()
-        
-        # Trigger render event
-        self.trigger_event("render")
+    def quit(self):
+        """Quit the game"""
+        self.running = False
+        self.logger.info("Quit requested")
     
     def toggle_pause(self):
         """Toggle pause state"""
         self.paused = not self.paused
-        self.logger.info(f"Game {'paused' if self.paused else 'resumed'}")
-        
-        # Trigger pause event
-        self.trigger_event("pause_toggled", paused=self.paused)
+        self.logger.info(f"Game {'paused' if self.paused else 'unpaused'}")
     
-    def start(self):
-        """Start the game loop"""
-        self.running = True
-        self.last_update_time = time.time()
-        
-        self.logger.info("Advanced game engine started")
-        
-        try:
-            while self.running:
-                # Calculate delta time
-                current_time = time.time()
-                self.delta_time = current_time - self.last_update_time
-                self.last_update_time = current_time
-                
-                # Update game state
-                self.update(self.delta_time)
-                
-                # Render
-                self.render()
-                
-                # Increment frame counter
-                self.frame_count += 1
-                
-                # Calculate FPS
-                if self.frame_count % 60 == 0:
-                    self.fps = int(1.0 / max(0.001, self.delta_time))
-                
-                # Cap frame rate
-                self.clock.tick(self.target_fps)
-                
-        except KeyboardInterrupt:
-            self.logger.info("Game engine stopped by user")
-        except Exception as e:
-            self.logger.error(f"Error in game loop: {str(e)}", exc_info=True)
-        finally:
-            self.running = False
-            pygame.quit()
-            self.logger.info("Advanced game engine stopped")
+    def set_target_fps(self, fps: int):
+        """Set the target frames per second"""
+        self.target_fps = max(1, fps)
+        self.logger.info(f"Set target FPS to {self.target_fps}")
     
-    def stop(self):
-        """Stop the game loop"""
-        self.running = False
-        
-        # Trigger stop event
-        self.trigger_event("engine_stopped")
+    def get_fps(self) -> float:
+        """Get the current FPS"""
+        return self.clock.get_fps()
+    
+    def get_game_time(self) -> float:
+        """Get the total game time in seconds"""
+        return self.game_time
+    
+    def get_frame_count(self) -> int:
+        """Get the total number of frames"""
+        return self.frame_count
